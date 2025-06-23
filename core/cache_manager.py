@@ -1,82 +1,89 @@
 # core/cache_manager.py
 
 import sqlite3
-from typing import Optional, Dict, Any
-from config import DATABASE_PATH # Импортируем путь к БД из центрального конфига
+from pathlib import Path
+from typing import Dict, Any, Optional, List
 
-def get_db_connection():
+class CacheManager:
     """
-    Устанавливает и возвращает соединение с базой данных SQLite.
-    Включает поддержку возврата данных в виде словарей.
+    Управляет кэшем данных команд в базе данных SQLite.
+
+    Отвечает за создание таблиц, добавление новых команд и их поиск
+    по имени или псевдонимам.
     """
-    conn = sqlite3.connect(DATABASE_PATH)
-    # Эта строка позволяет получать результаты запросов в виде словарей,
-    # где ключи - это названия колонок. Это очень удобно.
-    conn.row_factory = sqlite3.Row
-    return conn
+    def __init__(self, db_path: str) -> None:
+        """
+        Инициализирует менеджер кэша.
 
-def find_team_by_alias(alias: str) -> Optional[Dict[str, Any]]:
-    """
-    Ищет команду в базе данных по её псевдониму.
+        Args:
+            db_path (str): Путь к файлу базы данных SQLite.
+        """
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._connection = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._connection.row_factory = sqlite3.Row
+        self._create_tables()
 
-    Сначала функция ищет точное совпадение в таблице псевдонимов ('aliases').
-    Если совпадение найдено, она возвращает информацию об основной команде
-    (имя и имя файла логотипа) из таблицы 'teams'.
+    def _create_tables(self) -> None:
+        """Создает необходимые таблицы в БД, если они не существуют."""
+        with self._connection:
+            self._connection.execute("""
+                CREATE TABLE IF NOT EXISTS teams (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    logo_path TEXT NOT NULL,
+                    api_source TEXT
+                )
+            """)
+            self._connection.execute("""
+                CREATE TABLE IF NOT EXISTS team_aliases (
+                    id INTEGER PRIMARY KEY,
+                    team_id INTEGER,
+                    alias TEXT NOT NULL UNIQUE,
+                    FOREIGN KEY(team_id) REFERENCES teams(id)
+                )
+            """)
 
-    Args:
-        alias (str): Псевдоним команды для поиска (например, "спартак", "bayern").
+    def add_team_to_cache(self, name: str, logo_path: str, api_source: str, aliases: Optional[List[str]] = None) -> None:
+        """
+        Добавляет новую команду и ее псевдонимы в кэш.
 
-    Returns:
-        Optional[Dict[str, Any]]: Словарь с данными команды
-        (например, {'name': 'Spartak Moscow', 'logo_filename': 'Spartak Moscow.png'}),
-        если команда найдена. В противном случае возвращает None.
-    """
-    if not isinstance(alias, str) or not alias.strip():
-        return None
+        Args:
+            name (str): Официальное название команды.
+            logo_path (str): Путь к файлу с логотипом.
+            api_source (str): Источник данных (например, 'api-football').
+            aliases (Optional[List[str]]): Список псевдонимов для команды.
+        """
+        with self._connection:
+            cursor = self._connection.cursor()
+            cursor.execute("INSERT INTO teams (name, logo_path, api_source) VALUES (?, ?, ?)",
+                           (name, logo_path, api_source))
+            team_id = cursor.lastrowid
+            if aliases:
+                for alias in aliases:
+                    cursor.execute("INSERT INTO team_aliases (team_id, alias) VALUES (?, ?)",
+                                   (team_id, alias.lower()))
+            # Добавляем само имя команды как псевдоним в нижнем регистре
+            cursor.execute("INSERT INTO team_aliases (team_id, alias) VALUES (?, ?)",
+                           (team_id, name.lower()))
 
-    # Приводим псевдоним к нижнему регистру для консистентного поиска
-    search_alias = alias.strip().lower()
 
-    query = """
-    SELECT
-        t.name,
-        t.logo_filename
-    FROM
-        aliases a
-    JOIN
-        teams t ON a.team_id = t.id
-    WHERE
-        a.alias_name = ?
-    """
+    def find_team_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """
+        Ищет команду в кэше по имени или псевдониму.
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(query, (search_alias,))
-        result = cursor.fetchone() # fetchone(), так как псевдоним уникален
-        if result:
-            # Преобразуем sqlite3.Row в стандартный dict для унификации
-            return dict(result)
-        return None
-    finally:
-        # Убедимся, что соединение всегда закрывается
-        conn.close()
+        Args:
+            name (str): Имя или псевдоним команды для поиска.
 
-# --- Пример использования (для демонстрации) ---
-# Этот блок выполнится, только если запустить этот файл напрямую:
-# python core/cache_manager.py
-if __name__ == '__main__':
-    print("Демонстрация работы cache_manager.")
-    print(f"Используется база данных: {DATABASE_PATH}")
-
-    # Перед запуском этого примера убедитесь, что вы запустили
-    # python setup_database.py для создания и наполнения БД.
-
-    test_aliases = ["брюгге", "рапид вена", "rapid vienna", "несуществующая команда"]
-
-    for test_alias in test_aliases:
-        team_info = find_team_by_alias(test_alias)
-        if team_info:
-            print(f"Поиск по '{test_alias}': Найдена команда -> {team_info['name']} ({team_info['logo_filename']})")
-        else:
-            print(f"Поиск по '{test_alias}': Команда не найдена в кэше.")
+        Returns:
+            Optional[Dict[str, Any]]: Словарь с данными команды, если найдена, иначе None.
+        """
+        cursor = self._connection.cursor()
+        cursor.execute("""
+            SELECT t.id, t.name, t.logo_path, t.api_source
+            FROM teams t
+            JOIN team_aliases ta ON t.id = ta.team_id
+            WHERE ta.alias = ?
+        """, (name.lower(),))
+        row = cursor.fetchone()
+        return dict(row) if row else None
