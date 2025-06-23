@@ -8,6 +8,8 @@ from gui.main_window import MainWindow
 from core.view_model import ViewModel
 from core.cache_manager import CacheManager
 from core.api_clients import ApiFootballClient
+from config import DATABASE_PATH, APIFOOTBALL_KEY
+from core.image_generator import ImageGenerator
 
 
 def main():
@@ -26,16 +28,17 @@ def main():
 
     # 2. Инициализируем все компоненты-зависимости
     main_window = MainWindow()
-    cache_manager = CacheManager()
-    # Убедитесь, что API ключ для ApiFootballClient доступен в .env файле
-    api_client = ApiFootballClient()
+    cache_manager = CacheManager(DATABASE_PATH)
+    api_client = ApiFootballClient(APIFOOTBALL_KEY)
+    image_generator = ImageGenerator()
 
     # 3. Создаем ViewModel и внедряем в него все зависимости.
     # Этот подход (Dependency Injection) делает код более модульным и тестируемым.
     view_model = ViewModel(
-        view=main_window,
-        cache_manager=cache_manager,
-        api_client=api_client
+        main_window,
+        cache_manager,
+        api_client,
+        image_generator
     )
 
     # 4. Отображаем главный интерфейс

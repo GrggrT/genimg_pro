@@ -8,7 +8,3 @@ PySide6
 
 # Для удобной работы с .env файлом
 python-dotenv 
-
-# .env файл
-DEEPL_API_KEY="8f34b9b3-a664-42ad-8e3c-c1a4e9ec748d:fx"
-APIFOOTBALL_KEY="ВАШ_КЛЮЧ_ОТ_API-FOOTBALL" 

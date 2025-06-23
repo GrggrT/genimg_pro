@@ -2,7 +2,7 @@
 
 import os
 import requests
-from PySide6.QtCore import QObject, Slot, QThread
+from PySide6.QtCore import QObject, Slot, QThread, Signal
 from gui.main_window import MainWindow
 from gui.worker import Worker
 from core.cache_manager import CacheManager
