@@ -1,98 +1,82 @@
 # core/cache_manager.py
-import os
-import time
-from sqlalchemy.orm import sessionmaker
-from core.models import TeamCache, get_engine
-from config import CACHE_EXPIRATION_DAYS, LOGO_DIR
 
-class CacheManager:
+import sqlite3
+from typing import Optional, Dict, Any
+from config import DATABASE_PATH # Импортируем путь к БД из центрального конфига
+
+def get_db_connection():
     """
-    Класс для управления кэшем данных в базе данных SQLite через SQLAlchemy.
+    Устанавливает и возвращает соединение с базой данных SQLite.
+    Включает поддержку возврата данных в виде словарей.
     """
-    def __init__(self):
-        """
-        Инициализирует менеджер кэша, создавая сессию для работы с БД.
-        """
-        engine = get_engine()
-        self.Session = sessionmaker(bind=engine)
+    conn = sqlite3.connect(DATABASE_PATH)
+    # Эта строка позволяет получать результаты запросов в виде словарей,
+    # где ключи - это названия колонок. Это очень удобно.
+    conn.row_factory = sqlite3.Row
+    return conn
 
-    def _normalize_name(self, name: str) -> str:
-        """
-        Приводит имя команды к стандартному виду для поиска и сохранения.
-        """
-        return name.strip().lower()
+def find_team_by_alias(alias: str) -> Optional[Dict[str, Any]]:
+    """
+    Ищет команду в базе данных по её псевдониму.
 
-    def find_team_by_name(self, team_name: str):
-        """
-        Ищет команду в кэше по её нормализованному имени.
+    Сначала функция ищет точное совпадение в таблице псевдонимов ('aliases').
+    Если совпадение найдено, она возвращает информацию об основной команде
+    (имя и имя файла логотипа) из таблицы 'teams'.
 
-        Args:
-            team_name (str): Имя команды для поиска.
+    Args:
+        alias (str): Псевдоним команды для поиска (например, "спартак", "bayern").
 
-        Returns:
-            TeamCache | None: Объект команды, если она найдена и кэш не устарел,
-                              иначе None.
-        """
-        normalized_name = self._normalize_name(team_name)
-        session = self.Session()
-        try:
-            team = session.query(TeamCache).filter_by(team_name_normalized=normalized_name).first()
+    Returns:
+        Optional[Dict[str, Any]]: Словарь с данными команды
+        (например, {'name': 'Spartak Moscow', 'logo_filename': 'Spartak Moscow.png'}),
+        если команда найдена. В противном случае возвращает None.
+    """
+    if not isinstance(alias, str) or not alias.strip():
+        return None
 
-            if not team:
-                print(f"КЭШ: Команда '{normalized_name}' не найдена.")
-                return None
+    # Приводим псевдоним к нижнему регистру для консистентного поиска
+    search_alias = alias.strip().lower()
 
-            # Проверяем, не устарел ли кэш
-            cache_lifetime_seconds = CACHE_EXPIRATION_DAYS * 24 * 60 * 60
-            if time.time() - team.last_updated_ts > cache_lifetime_seconds:
-                print(f"КЭШ: Запись для '{normalized_name}' устарела. Требуется обновление.")
-                return None
-            
-            # Проверяем, существует ли файл логотипа
-            if not os.path.exists(team.logo_path):
-                 print(f"КЭШ: Файл логотипа для '{normalized_name}' не найден по пути {team.logo_path}. Требуется обновление.")
-                 return None
+    query = """
+    SELECT
+        t.name,
+        t.logo_filename
+    FROM
+        aliases a
+    JOIN
+        teams t ON a.team_id = t.id
+    WHERE
+        a.alias_name = ?
+    """
 
-            print(f"КЭШ: Команда '{normalized_name}' найдена в кэше.")
-            return team
-        finally:
-            session.close()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(query, (search_alias,))
+        result = cursor.fetchone() # fetchone(), так как псевдоним уникален
+        if result:
+            # Преобразуем sqlite3.Row в стандартный dict для унификации
+            return dict(result)
+        return None
+    finally:
+        # Убедимся, что соединение всегда закрывается
+        conn.close()
 
-    def add_team_to_cache(self, team_name: str, logo_path: str, api_source: str):
-        """
-        Добавляет или обновляет запись о команде в кэше.
+# --- Пример использования (для демонстрации) ---
+# Этот блок выполнится, только если запустить этот файл напрямую:
+# python core/cache_manager.py
+if __name__ == '__main__':
+    print("Демонстрация работы cache_manager.")
+    print(f"Используется база данных: {DATABASE_PATH}")
 
-        Args:
-            team_name (str): Имя команды.
-            logo_path (str): Путь к файлу логотипа.
-            api_source (str): Источник API ('api-football', 'thesportsdb').
-        """
-        normalized_name = self._normalize_name(team_name)
-        session = self.Session()
-        try:
-            # Ищем существующую запись
-            team = session.query(TeamCache).filter_by(team_name_normalized=normalized_name).first()
-            
-            if team:
-                # Обновляем существующую
-                team.logo_path = logo_path
-                team.api_source = api_source
-                team.last_updated_ts = int(time.time())
-                print(f"КЭШ: Запись для '{normalized_name}' обновлена.")
-            else:
-                # Создаем новую
-                new_team = TeamCache(
-                    team_name_normalized=normalized_name,
-                    logo_path=logo_path,
-                    api_source=api_source,
-                    last_updated_ts=int(time.time())
-                )
-                session.add(new_team)
-                print(f"КЭШ: Новая запись для '{normalized_name}' добавлена.")
-            
-            session.commit()
-        except Exception as e:
-            print(f"КЭШ: Ошибка при добавлении/обновлении записи: {e}")
-            session.rollback()
-        finally:
-            session.close()
+    # Перед запуском этого примера убедитесь, что вы запустили
+    # python setup_database.py для создания и наполнения БД.
+
+    test_aliases = ["брюгге", "рапид вена", "rapid vienna", "несуществующая команда"]
+
+    for test_alias in test_aliases:
+        team_info = find_team_by_alias(test_alias)
+        if team_info:
+            print(f"Поиск по '{test_alias}': Найдена команда -> {team_info['name']} ({team_info['logo_filename']})")
+        else:
+            print(f"Поиск по '{test_alias}': Команда не найдена в кэше.")
