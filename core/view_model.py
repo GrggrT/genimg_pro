@@ -1,6 +1,7 @@
 # core/view_model.py
 import os
 import requests
+# <<< ИЗМЕНЕНИЕ: Убедимся, что Signal импортирован >>>
 from PySide6.QtCore import QObject, Slot, QThread, Signal, QMetaObject, Qt
 from gui.main_window import MainWindow
 from gui.worker import Worker
@@ -14,6 +15,9 @@ class ViewModel(QObject):
     """
     Асинхронный ViewModel, управляющий логикой приложения без блокировки GUI.
     """
+    # <<< ИЗМЕНЕНИЕ: Добавляем новый сигнал >>>
+    image_generated = Signal(str)  # Сигнал, передающий путь к готовому изображению
+
     def __init__(self, main_window: MainWindow, cache_manager: CacheManager,
                  api_client: ApiFootballClient, image_generator: ImageGenerator) -> None:
         super().__init__()
@@ -25,20 +29,20 @@ class ViewModel(QObject):
         self.worker_thread = QThread(self)
         self.worker_thread.start()
 
-        # <<< ИЗМЕНЕНИЕ: Добавляем атрибут для хранения активного Worker'a >>>
         self.worker: Optional[Worker] = None
-
         self.team1_data: Optional[Dict[str, Any]] = None
         self.team2_data: Optional[Dict[str, Any]] = None
 
         self.main_window.generate_clicked.connect(self.on_generate_clicked)
-
+    
+    # ... (методы _run_task, _find_team_flow, on_generate_clicked, etc. остаются без изменений) ...
     def _run_task(self, func: Callable, *args: Any, on_finish: Callable) -> None:
-        """
-        Запускает задачу в фоновом потоке, сохраняя ссылку на Worker'a.
-        """
+        if self.worker is not None:
+            print("[DEBUG] ViewModel: Операция уже выполняется.")
+            self.main_window.set_status_message("Подождите, предыдущая операция еще не завершена.")
+            return
+
         print(f"[DEBUG] ViewModel: Запуск задачи для функции {func.__name__}")
-        # <<< ИЗМЕНЕНИЕ: Сохраняем worker'a в self.worker >>>
         self.worker = Worker(func, *args)
         self.worker.moveToThread(self.worker_thread)
 
@@ -46,20 +50,15 @@ class ViewModel(QObject):
         self.worker.error.connect(self._on_task_error)
         self.worker.finished.connect(on_finish)
         
-        # Очищаем worker'a после завершения, чтобы разрешить новый запуск
         self.worker.finished.connect(lambda: setattr(self, 'worker', None))
         self.worker.error.connect(lambda: setattr(self, 'worker', None))
         
-        # Worker должен самоуничтожиться
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.error.connect(self.worker.deleteLater)
 
         QMetaObject.invokeMethod(self.worker, 'run', Qt.QueuedConnection)
 
-    # ... (остальные методы остаются без изменений) ...
-
     def _find_team_flow(self, team_name: str, worker_progress_signal: Optional[Signal] = None) -> Dict[str, Any]:
-        # ... без изменений ...
         def report_progress(msg):
             if worker_progress_signal:
                 worker_progress_signal.emit(msg)
@@ -84,10 +83,6 @@ class ViewModel(QObject):
 
     @Slot()
     def on_generate_clicked(self):
-        """
-        Запускает асинхронную цепочку, если она не была уже запущена.
-        """
-        # <<< ИЗМЕНЕНИЕ: Проверяем, не выполняется ли уже задача >>>
         if self.worker is not None:
             print("[DEBUG] ViewModel: Операция уже выполняется.")
             self.main_window.set_status_message("Подождите, предыдущая операция еще не завершена.")
@@ -115,10 +110,23 @@ class ViewModel(QObject):
             self.team1_data, self.team2_data, prediction_text,
             on_finish=self._on_generation_finished
         )
-
+    
+    # <<< ИЗМЕНЕНИЕ: Обновляем слот-обработчик >>>
     @Slot(object)
-    def _on_generation_finished(self, image_path):
-        self.main_window.set_status_message(f"Изображение успешно сохранено: {image_path}")
+    def _on_generation_finished(self, output_path):
+        """Обработчик успешного завершения генерации изображения."""
+        if output_path and isinstance(output_path, str):
+            message = "Изображение успешно сохранено!"
+            print(message)
+            self.main_window.set_status_message(message)
+            # Посылаем сигнал с путем к изображению
+            self.image_generated.emit(output_path)
+        else:
+            # Обработка случая, если генератор вернул некорректный результат
+            error_message = f"Генератор изображений вернул некорректный результат: {output_path}"
+            print(f"[ОШИБКА] {error_message}")
+            self.main_window.show_error_message("Ошибка генерации", error_message)
+
         self.main_window.toggle_generate_button(True)
 
     @Slot(Exception)
