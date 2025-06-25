@@ -100,22 +100,29 @@ class ViewModel(QObject):
 
     @Slot()
     def on_generate_clicked(self):
-        """Основная логика, запускающая весь процесс."""
+        """
+        Основная логика, запускающая весь процесс.
+        """
+        team1_name = self.main_window.team1_input.text().strip()
+        team2_name = self.main_window.team2_input.text().strip()
+
+        # !!! ВАЖНОЕ ИЗМЕНЕНИЕ !!!
+        # Проверяем, что поля не пусты, ПЕРЕД тем, как запускать потоки.
+        if not team1_name or not team2_name:
+            # Если поля пусты, просто показываем сообщение в статус-баре
+            # и ничего больше не делаем. Это предотвратит запуск и закрытие.
+            self.main_window.set_status_message("Введите названия обеих команд")
+            return
+            
+        # Если поля заполнены, запускаем сложный процесс
         self.main_window.toggle_generate_button(False)
         self.main_window.progress_bar.setVisible(True)
         self.main_window.progress_bar.setValue(10)
         self.found_teams.clear()
 
-        team1_name = self.main_window.team1_input.text().strip()
-        team2_name = self.main_window.team2_input.text().strip()
-
-        if not team1_name or not team2_name:
-            self._on_task_error("Названия обеих команд должны быть заполнены.")
-            return
-
         print("[DEBUG] ViewModel: Запуск поиска для Команды 1")
         self._start_task(self._find_team_flow, team1_name, on_finish=self._on_team1_found)
-    
+
     def _on_team1_found(self, team1):
         """Колбэк после нахождения первой команды."""
         if not team1: return
