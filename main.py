@@ -6,9 +6,9 @@ from PySide6.QtWidgets import QApplication
 # Мы импортируем и запускаем настройку базы данных ПЕРЕД тем,
 # как импортировать остальные части программы. Это гарантирует,
 # что база данных всегда будет в правильном состоянии.
-from setup_database import setup_database
+from setup_database import create_database
 print("Запуск проверки и инициализации базы данных...")
-setup_database()
+create_database()
 print("База данных готова к работе.")
 # ----------------------------------------------------
 
