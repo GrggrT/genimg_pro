@@ -1,201 +1,184 @@
 # core/view_model.py
+
 import os
-import requests
 import transliterate
-from config import LOGO_DIR
+from transliterate.exceptions import LanguageNotFoundError
+from PySide6.QtCore import QObject, QThread, Signal, Slot, QMetaObject, Qt
 from typing import Optional, Dict, Any, Callable
 
-from PySide6.QtCore import QObject, Slot, QThread, Signal, QMetaObject, Qt
 from gui.main_window import MainWindow
 from gui.worker import Worker
 from core.cache_manager import CacheManager
 from core.api_clients import ApiFootballClient
 from core.image_generator import ImageGenerator
+from core.models import Team
 
-# "Заглушки" для статистики
-LEAGUE_ID = 39
-SEASON = 2023
+# Константы для статистики
+LEAGUE_ID = 39  # Premier League
+SEASON = 2024   # Сезон
 
 class ViewModel(QObject):
     """
-    Асинхронный ViewModel, оркестрирующий сбор данных о командах
-    и их статистике перед генерацией изображения.
+    Асинхронный ViewModel, управляющий логикой приложения, используя
+    единый фоновый поток для стабильности и производительности.
     """
     image_generated = Signal(str)
 
     def __init__(self, main_window: MainWindow, cache_manager: CacheManager,
-                 api_client: ApiFootballClient, image_generator: ImageGenerator) -> None:
+                 api_client: ApiFootballClient, image_generator: ImageGenerator):
         super().__init__()
         self.main_window = main_window
         self.cache_manager = cache_manager
         self.api_client = api_client
         self.image_generator = image_generator
 
+        # --- ИСПРАВЛЕНИЕ: Создаем один постоянный поток ---
         self.worker_thread = QThread(self)
         self.worker_thread.start()
 
+        # Атрибуты для хранения состояния
         self.worker: Optional[Worker] = None
-        self.team1_data: Optional[Any] = None # Теперь это объект, а не словарь
-        self.team2_data: Optional[Any] = None # Теперь это объект, а не словарь
-        self.team1_stats: Optional[Dict[str, Any]] = None
-        self.team2_stats: Optional[Dict[str, Any]] = None
+        self.found_teams: Dict[str, Team] = {}
+        self.team_stats: Dict[str, dict] = {}
 
         self.main_window.generate_clicked.connect(self.on_generate_clicked)
-    
-    # ... (_run_task и _find_team_flow остаются без изменений) ...
-    def _run_task(self, func: Callable, *args: Any, on_finish: Callable) -> None:
-        if self.worker is not None:
+        self.main_window.clear_clicked.connect(self.on_clear_clicked)
+
+    # <<< ИСПРАВЛЕНИЕ: Сигнатура метода изменена для явного разделения аргументов >>>
+    def _start_task(self, func: Callable, on_finish: Callable, *func_args: Any):
+        """
+        Запускает задачу в постоянном фоновом потоке.
+        Колбэк on_finish и аргументы для целевой функции передаются раздельно.
+        """
+        if self.worker:
             self.main_window.set_status_message("Подождите, предыдущая операция еще не завершена.")
             return
 
-        self.worker = Worker(func, *args)
+        self.worker = Worker(func, *func_args)
         self.worker.moveToThread(self.worker_thread)
-        self.worker.progress.connect(self.main_window.set_status_message)
-        self.worker.error.connect(self._on_task_error)
+
+        # Правильное подключение сигналов
         self.worker.finished.connect(on_finish)
+        self.worker.error.connect(self._on_task_error)
+        
+        # Очистка после завершения
         self.worker.finished.connect(lambda: setattr(self, 'worker', None))
-        self.worker.error.connect(self.worker.deleteLater)
+        self.worker.error.connect(lambda: setattr(self, 'worker', None))
+        # <<< ИСПРАВЛЕНИЕ: Используем `self.worker` для корректного удаления >>>
         self.worker.finished.connect(self.worker.deleteLater)
+        self.worker.error.connect(self.worker.deleteLater)
+
+        # Безопасный запуск задачи в потоке
         QMetaObject.invokeMethod(self.worker, 'run', Qt.QueuedConnection)
 
-    def _find_team_flow(self, team_name: str, worker_progress_signal: Optional[Signal] = None) -> Any:
-        def report_progress(msg):
-            if worker_progress_signal:
-                worker_progress_signal.emit(msg)
+    @Slot(str)
+    def _on_task_error(self, error_message: str):
+        print(f"[ОШИБКА] Обработана ошибка в ViewModel: {error_message}")
+        user_friendly_message = error_message.strip().splitlines()[-1]
+        self.main_window.show_error_message("Ошибка", user_friendly_message)
+        self.main_window.toggle_generate_button(True)
+        self.worker = None # Сбрасываем worker при ошибке
+
+    def _find_team_flow(self, team_name: str) -> Team | None:
+        """Полный цикл поиска команды с предварительной транслитерацией."""
         original_team_name = team_name
         try:
             if any('а' <= c <= 'я' for c in team_name.lower()):
-                team_name_translit = transliterate.translit(team_name, 'ru', reversed=True)
-                team_name = team_name_translit
-        except:
-            print(f"[ПРЕДУПРЕЖДЕНИЕ] Не удалось выполнить транслитерацию для '{team_name}', используется оригинальный запрос.")
-        team_data = self.cache_manager.find_team_by_alias(team_name)
-        if team_data:
-            return team_data
+                team_name = transliterate.translit(team_name, 'ru', reversed=True)
+        except LanguageNotFoundError:
+            pass # Игнорируем ошибку и используем оригинальное имя
+        
+        team = self.cache_manager.find_team_by_alias(team_name)
+        if team: return team
+
         if team_name != original_team_name:
-            team_data = self.cache_manager.find_team_by_alias(original_team_name)
-            if team_data:
-                return team_data
-        report_progress(f"'{original_team_name}' не найдена в кэше. Ищу в интернете...")
-        api_data = self.api_client.fetch_team_data(team_name)
-        if not api_data or not api_data.logo_url:
-            raise ValueError(f"Команда '{original_team_name}' не найдена ни в кэше, ни через API.")
-        report_progress(f"Загружаю логотип для '{api_data.name}'...")
-        logo_path = self._download_logo(api_data.logo_url, api_data.name)
+            team = self.cache_manager.find_team_by_alias(original_team_name)
+            if team: return team
+
+        api_team = self.api_client.fetch_team_data(team_name)
+        if not api_team:
+            raise ValueError(f"Команда '{original_team_name}' не найдена нигде.")
+
+        logo_path = self.api_client.download_logo(api_team)
         if not logo_path:
-            raise ConnectionError(f"Не удалось загрузить логотип для '{api_data.name}'.")
-        report_progress(f"Сохраняю '{api_data.name}' в кэш...")
+            raise ConnectionError(f"Не удалось загрузить логотип для '{api_team.name}'.")
+
         self.cache_manager.add_or_update_team(
-            team_name=api_data.name,
+            team_name=api_team.name,
             logo_filename=os.path.basename(logo_path),
             api_source='api-football',
-            aliases=[original_team_name, team_name, api_data.name]
+            aliases=[original_team_name, team_name, api_team.name]
         )
-        return self.cache_manager.find_team_by_alias(team_name)
+        return self.cache_manager.find_team_by_alias(api_team.name)
+
 
     @Slot()
     def on_generate_clicked(self):
-        if self.worker is not None:
-            self.main_window.set_status_message("Подождите, предыдущая операция еще не завершена.")
-            return
-        
+        """Запускает полную цепочку сбора данных."""
         self.main_window.toggle_generate_button(False)
-        self.team1_data, self.team2_data, self.team1_stats, self.team2_stats = None, None, None, None
-        
+        self.found_teams = {}
+        self.team_stats = {}
         team1_name = self.main_window.team1_input.text().strip()
-        self._run_task(self._find_team_flow, team1_name, on_finish=self._on_team1_found)
+        self._start_task(self._find_team_flow, self._on_team1_found, team1_name)
 
-    @Slot(object)
-    def _on_team1_found(self, team1_result):
-        self.team1_data = team1_result
+    def _on_team1_found(self, team1: Team):
+        if not team1: return
+        self.found_teams['team1'] = team1
         team2_name = self.main_window.team2_input.text().strip()
-        self._run_task(self._find_team_flow, team2_name, on_finish=self._on_team2_found)
+        self._start_task(self._find_team_flow, self._on_team2_found, team2_name)
 
-    @Slot(object)
-    def _on_team2_found(self, team2_result):
-        self.team2_data = team2_result
-        
-        # <<< ИСПРАВЛЕНО: Доступ через точку .name >>>
-        self.main_window.set_status_message(f"Сбор статистики для {self.team1_data.name}...")
-        
-        self._run_task(
+    def _on_team2_found(self, team2: Team):
+        if not team2: return
+        self.found_teams['team2'] = team2
+        # <<< ИСПРАВЛЕНИЕ: Правильно передаем аргументы в _start_task >>>
+        self._start_task(
             self.api_client.fetch_team_statistics,
-            # <<< ИСПРАВЛЕНО: Доступ через точку .id >>>
-            team_id=self.team1_data.id,
-            league_id=LEAGUE_ID,
-            season=SEASON,
-            on_finish=self._on_team1_stats_found
+            self._on_team1_stats_found,
+            self.found_teams['team1'].id, LEAGUE_ID, SEASON
         )
 
-    @Slot(object)
-    def _on_team1_stats_found(self, team1_stats_result):
-        self.team1_stats = team1_stats_result
-        
-        # <<< ИСПРАВЛЕНО: Доступ через точку .name >>>
-        self.main_window.set_status_message(f"Сбор статистики для {self.team2_data.name}...")
-        
-        self._run_task(
+    def _on_team1_stats_found(self, stats1: dict):
+        if not stats1:
+            return self._on_task_error("Не удалось получить статистику для первой команды.")
+        self.team_stats['team1'] = stats1
+        self._start_task(
             self.api_client.fetch_team_statistics,
-            # <<< ИСПРАВЛЕНО: Доступ через точку .id >>>
-            team_id=self.team2_data.id,
-            league_id=LEAGUE_ID,
-            season=SEASON,
-            on_finish=self._on_team2_stats_found
+            self._on_team2_stats_found,
+            self.found_teams['team2'].id, LEAGUE_ID, SEASON
         )
 
-    @Slot(object)
-    def _on_team2_stats_found(self, team2_stats_result):
-        self.team2_stats = team2_stats_result
-        self.main_window.set_status_message("Все данные собраны. Генерация изображения...")
-        
-        prediction_text = self.main_window.prediction_input.text()
-        
-        self._run_task(
+    def _on_team2_stats_found(self, stats2: dict):
+        if not stats2:
+            return self._on_task_error("Не удалось получить статистику для второй команды.")
+        self.team_stats['team2'] = stats2
+        prediction = self.main_window.prediction_input.text()
+        self._start_task(
             self.image_generator.create_single_post_image,
-            team1_data=self.team1_data,
-            team2_data=self.team2_data,
-            team1_stats=self.team1_stats,
-            team2_stats=self.team2_stats,
-            prediction=prediction_text,
-            on_finish=self._on_generation_finished
+            self._on_image_generated,
+            self.found_teams['team1'], self.team_stats['team1'],
+            self.found_teams['team2'], self.team_stats['team2'],
+            prediction
         )
-    
-    @Slot(object)
-    def _on_generation_finished(self, output_path):
-        if output_path and isinstance(output_path, str):
-            message = "Изображение успешно сохранено!"
-            self.main_window.set_status_message(message)
-            self.image_generated.emit(output_path)
-        else:
-            error_message = f"Генератор изображений вернул некорректный результат: {output_path}"
-            self.main_window.show_error_message("Ошибка генерации", error_message)
+
+    def _on_image_generated(self, image_path: str):
+        """Обработчик успешного создания изображения."""
+        if image_path:
+            self.main_window.set_status_message("Изображение успешно сохранено!")
+            self.image_generated.emit(image_path)
         self.main_window.toggle_generate_button(True)
 
-    @Slot(Exception)
-    def _on_task_error(self, error: Exception) -> None:
-        error_message = str(error)
-        print(f"[ОШИБКА] Произошла ошибка в фоновом потоке: {error_message}")
-        self.main_window.show_error_message("Ошибка выполнения", error_message)
-        self.main_window.toggle_generate_button(True)
-
-    def _download_logo(self, logo_url: str, team_name: str) -> str:
-        try:
-            response = requests.get(logo_url, stream=True, timeout=10)
-            response.raise_for_status()
-            safe_filename = "".join(c for c in team_name if c.isalnum() or c in (' ', '_')).rstrip()
-            logo_filename = f"{safe_filename}.png"
-            logo_path = os.path.join(LOGO_DIR, logo_filename)
-            os.makedirs(LOGO_DIR, exist_ok=True)
-            with open(logo_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            return logo_path
-        except requests.RequestException as exc:
-            raise ConnectionError(f"Ошибка сети при загрузке логотипа: {exc}") from exc
+    @Slot()
+    def on_clear_clicked(self):
+        """Очищает поля ввода и сбрасывает состояние."""
+        self.main_window.team1_input.clear()
+        self.main_window.team2_input.clear()
+        self.main_window.prediction_input.clear()
+        self.found_teams = {}
+        self.team_stats = {}
+        self.main_window.set_status_message("Готово к работе.")
 
     def shutdown(self):
-        if self.worker_thread.isRunning():
-            print("Запрос на остановку фонового потока...")
+        """Корректно останавливает фоновый поток перед выходом."""
+        if self.worker_thread and self.worker_thread.isRunning():
             self.worker_thread.quit()
             self.worker_thread.wait(5000)
-            print("Фоновый поток успешно остановлен.")
