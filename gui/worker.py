@@ -1,45 +1,39 @@
 # gui/worker.py
-from PySide6.QtCore import QObject, Signal, Slot, QThread
+import sys
+import traceback
+from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 class Worker(QObject):
     """
-    Асинхронный обработчик для выполнения длительных задач в отдельном потоке.
+    Универсальный обработчик для выполнения длительных задач в фоновом потоке.
     """
     finished = Signal(object)
-    error = Signal(Exception)
-    progress = Signal(int, str) # Изменен для передачи (value, text)
+    error = Signal(str)
+    progress = Signal(int)
 
-    def __init__(self, func, *args, **kwargs):
+    def __init__(self, fn, *args, **kwargs):
         """
-        :param func: Функция, которую необходимо выполнить.
+        :param fn: Функция, которую нужно выполнить.
         :param args: Позиционные аргументы для функции.
         :param kwargs: Именованные аргументы для функции.
         """
         super().__init__()
-        self.func = func
+        self.fn = fn
         self.args = args
         self.kwargs = kwargs
 
     @Slot()
     def run(self):
-        """
-        Выполняет задачу и испускает соответствующий сигнал.
-        """
-        # <<< ДОБАВЛЕНО ДЛЯ ДИАГНОСТИКИ >>>
-        print(f"[DEBUG] Worker запущен в потоке: {QThread.currentThread().objectName()} ({QThread.currentThreadId()})")
-        
+        """Запускает выполнение задачи."""
         try:
-            # Проверяем, может ли функция принять сигнал прогресса
-            # и передаем его, если это возможно.
-            if 'worker_progress_signal' in self.func.__code__.co_varnames:
-                self.kwargs['worker_progress_signal'] = self.progress
-            
-            result = self.func(*self.args, **self.kwargs)
-            self.finished.emit(result)
+            # !!! ИЗМЕНЕНИЕ ЗДЕСЬ !!!
+            # Заменяем ошибочный QThread.currentThreadId() на id(QThread.currentThread())
+            print(f"[DEBUG] Worker запущен в потоке: {QThread.currentThread().objectName()} ({id(QThread.currentThread())})")
+            result = self.fn(*self.args, **self.kwargs)
         except Exception as e:
-            # Выводим ошибку в консоль для отладки
-            import traceback
-            print(f"[ERROR] В Worker произошла ошибка:")
-            traceback.print_exc()
-            self.error.emit(e)
-
+            # В случае ошибки, формируем подробное сообщение
+            error_message = f"Произошла ошибка: {e}\n{traceback.format_exc()}"
+            self.error.emit(error_message)
+        else:
+            # Если всё прошло успешно, отправляем результат
+            self.finished.emit(result)
