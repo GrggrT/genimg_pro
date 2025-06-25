@@ -1,7 +1,7 @@
 # gui/main_window.py
 import sys
 from PySide6.QtCore import Signal, Slot, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -64,7 +64,7 @@ class MainWindow(QMainWindow):
         data_input_group.setLayout(form_layout)
         main_layout.addWidget(data_input_group)
         
-        # --- НОВОЕ: Прогресс-бар ---
+        # --- Прогресс-бар ---
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False) # Скрыт по-умолчанию
         self.progress_bar.setTextVisible(True)
@@ -87,7 +87,7 @@ class MainWindow(QMainWindow):
         self.generate_button.setFixedHeight(40)
         main_layout.addWidget(self.generate_button)
 
-        # --- НОВОЕ: Кнопки управления ---
+        # --- Кнопки управления ---
         controls_layout = QHBoxLayout()
         self.save_as_button = QPushButton("Сохранить как...")
         self.clear_button = QPushButton("Очистить")
@@ -121,7 +121,6 @@ class MainWindow(QMainWindow):
             
     def _on_save_as_clicked(self):
         """Открывает диалог сохранения файла и отправляет сигнал с путем."""
-        # Открываем диалог сохранения файла
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Сохранить изображение",
@@ -136,12 +135,11 @@ class MainWindow(QMainWindow):
     def display_image(self, path: str):
         pixmap = QPixmap(path)
         self.image_preview_label.setPixmap(pixmap)
-        self.save_as_button.setEnabled(True) # Активируем кнопку сохранения
+        self.save_as_button.setEnabled(True)
         self.set_status_message(f"Изображение успешно сгенерировано: {path}")
 
     @Slot(int, str)
     def update_progress(self, value: int, text: str):
-        """Обновляет состояние прогресс-бара."""
         if not self.progress_bar.isVisible():
             self.progress_bar.setVisible(True)
         self.progress_bar.setValue(value)
@@ -149,16 +147,15 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def clear_all_fields(self):
-        """Очищает все поля ввода и предпросмотр."""
         self.team1_input.clear()
         self.team2_input.clear()
         self.prediction_input.clear()
         self.image_preview_label.setText("Здесь появится сгенерированное изображение")
-        self.image_preview_label.setPixmap(QPixmap()) # Очищаем картинку
+        self.image_preview_label.setPixmap(QPixmap())
         self.save_as_button.setEnabled(False)
         self.progress_bar.setVisible(False)
         self.status_bar.showMessage("Готово")
-        self.clear_clicked.emit() # Сообщаем ViewModel, что все очищено
+        self.clear_clicked.emit()
 
     @Slot(str)
     def set_status_message(self, message: str):
@@ -171,6 +168,15 @@ class MainWindow(QMainWindow):
     @Slot(str, str)
     def show_error_message(self, title: str, message: str):
         QMessageBox.critical(self, title, message)
+
+    def closeEvent(self, event: QCloseEvent):
+        """
+        Этот метод вызывается автоматически при попытке закрыть окно.
+        """
+        # View не должен знать о ViewModel.
+        # Вместо этого, мы просто принимаем событие, а логику добавим в main.py
+        print("Окно закрывается, приложение завершает работу.")
+        event.accept()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

@@ -1,18 +1,15 @@
 # main.py
 import sys
 from PySide6.QtWidgets import QApplication
-import sqlite3
 from config import DATABASE_PATH
-from setup_database import create_tables
+from setup_database import setup_database
 
 # --- ШАГ 1: ПРОВЕРКА И СОЗДАНИЕ БАЗЫ ДАННЫХ ---
 # Мы импортируем и запускаем настройку базы данных ПЕРЕД тем,
 # как импортировать остальные части программы. Это гарантирует,
 # что база данных всегда будет в правильном состоянии.
 print("Запуск проверки и инициализации базы данных...")
-conn = sqlite3.connect(DATABASE_PATH)
-create_tables(conn)
-conn.close()
+setup_database()
 print("База данных готова к работе.")
 # ----------------------------------------------------
 
@@ -57,6 +54,9 @@ def main():
         api_client,
         image_generator
     )
+
+    # Соединяем сигнал о завершении приложения с методом остановки ViewModel
+    app.aboutToQuit.connect(view_model.shutdown)
 
     # 4. Отображаем главный интерфейс
     main_window.show()
