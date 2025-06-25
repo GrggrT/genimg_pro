@@ -1,14 +1,18 @@
 # main.py
 import sys
 from PySide6.QtWidgets import QApplication
+import sqlite3
+from config import DATABASE_PATH
+from setup_database import create_tables
 
 # --- ШАГ 1: ПРОВЕРКА И СОЗДАНИЕ БАЗЫ ДАННЫХ ---
 # Мы импортируем и запускаем настройку базы данных ПЕРЕД тем,
 # как импортировать остальные части программы. Это гарантирует,
 # что база данных всегда будет в правильном состоянии.
-from setup_database import create_database
 print("Запуск проверки и инициализации базы данных...")
-create_database()
+conn = sqlite3.connect(DATABASE_PATH)
+create_tables(conn)
+conn.close()
 print("База данных готова к работе.")
 # ----------------------------------------------------
 
