@@ -2,7 +2,6 @@
 
 import os
 import transliterate
-from transliterate.exceptions import LanguageNotFoundError
 from PySide6.QtCore import QObject, QThread, Signal, Slot, QMetaObject, Qt
 from typing import Optional, Dict, Any, Callable
 
@@ -85,7 +84,7 @@ class ViewModel(QObject):
         try:
             if any('а' <= c <= 'я' for c in team_name.lower()):
                 team_name = transliterate.translit(team_name, 'ru', reversed=True)
-        except LanguageNotFoundError:
+        except Exception:
             pass # Игнорируем ошибку и используем оригинальное имя
         
         team = self.cache_manager.find_team_by_alias(team_name)
