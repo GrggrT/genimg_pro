@@ -1,22 +1,13 @@
 # gui/worker.py
-
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, Signal, Slot, QThread
 
 class Worker(QObject):
     """
     Асинхронный обработчик для выполнения длительных задач в отдельном потоке.
-
-    Сигналы:
-        finished(object): Испускается при успешном завершении задачи.
-                          Передает результат выполнения функции.
-        error(Exception): Испускается, если во время выполнения произошло исключение.
-                          Передает объект исключения.
-        progress(str):    Испускается для обновления статуса в основном потоке.
-                          Передает текстовое сообщение.
     """
     finished = Signal(object)
     error = Signal(Exception)
-    progress = Signal(str)
+    progress = Signal(int, str) # Изменен для передачи (value, text)
 
     def __init__(self, func, *args, **kwargs):
         """
@@ -34,14 +25,21 @@ class Worker(QObject):
         """
         Выполняет задачу и испускает соответствующий сигнал.
         """
+        # <<< ДОБАВЛЕНО ДЛЯ ДИАГНОСТИКИ >>>
+        print(f"[DEBUG] Worker запущен в потоке: {QThread.currentThread().objectName()} ({QThread.currentThreadId()})")
+        
         try:
-            # Передаем сигнал progress в качестве аргумента,
-            # если целевая функция его поддерживает.
-            # Это позволяет сообщать о прогрессе изнутри выполняемой задачи.
+            # Проверяем, может ли функция принять сигнал прогресса
+            # и передаем его, если это возможно.
             if 'worker_progress_signal' in self.func.__code__.co_varnames:
                 self.kwargs['worker_progress_signal'] = self.progress
             
             result = self.func(*self.args, **self.kwargs)
             self.finished.emit(result)
         except Exception as e:
+            # Выводим ошибку в консоль для отладки
+            import traceback
+            print(f"[ERROR] В Worker произошла ошибка:")
+            traceback.print_exc()
             self.error.emit(e)
+
