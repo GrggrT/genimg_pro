@@ -3,7 +3,7 @@ import os
 import requests
 # <<< ИЗМЕНЕНИЕ: Добавляем импорты для транслитерации >>>
 import transliterate
-from transliterate.exceptions import LanguageNotFoundError
+# from transliterate.exceptions import LanguageNotFoundError
 
 from PySide6.QtCore import QObject, Slot, QThread, Signal, QMetaObject, Qt
 from gui.main_window import MainWindow
@@ -75,7 +75,7 @@ class ViewModel(QObject):
                 team_name_translit = transliterate.translit(team_name, 'ru', reversed=True)
                 print(f"[DEBUG] Попытка транслитерации: '{team_name}' -> '{team_name_translit}'")
                 team_name = team_name_translit
-        except LanguageNotFoundError:
+        except Exception:
             print(f"[ПРЕДУПРЕЖДЕНИЕ] Не удалось выполнить транслитерацию для '{team_name}', используется оригинальный запрос.")
         
         report_progress(f"Поиск '{original_team_name}' в кэше...")

@@ -9,4 +9,6 @@ PySide6
 # Для удобной работы с .env файлом
 python-dotenv
 
-SQLAlchemy 
+SQLAlchemy
+
+transliterate 
