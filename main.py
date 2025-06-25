@@ -28,7 +28,7 @@ def main():
 
     # 2. Инициализируем все компоненты-зависимости
     main_window = MainWindow()
-    cache_manager = CacheManager(DATABASE_PATH)
+    cache_manager = CacheManager()
     api_client = ApiFootballClient(APIFOOTBALL_KEY)
     image_generator = ImageGenerator()
 
