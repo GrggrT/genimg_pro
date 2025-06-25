@@ -2,51 +2,67 @@
 
 import requests
 from typing import Optional, Dict, Any
+from config import APIFOOTBALL_KEY, LOGO_DIR
+from core.utils import download_logo # Используем утилиту
 
-class ApiFootballClient:
-    """
-    Клиент для взаимодействия с API-Football.
+# --- Базовый класс для всех API клиентов ---
+class BaseApiClient:
+    """Абстрактный базовый класс для API клиентов."""
+    def fetch_team_data(self, team_name: str) -> Optional[Dict[str, Any]]:
+        raise NotImplementedError("Этот метод должен быть переопределен в дочернем классе.")
 
-    Предоставляет методы для получения данных о футбольных командах.
-    """
-    def __init__(self, api_key: str) -> None:
-        """
-        Инициализирует API клиент.
+# --- РЕАЛИЗАЦИЯ ДЛЯ API-FOOTBALL ---
+class ApiFootballClient(BaseApiClient):
+    """Клиент для взаимодействия с API-Football (v3)."""
+    # !!! ВАЖНЫЕ ИЗМЕНЕНИЯ ЗДЕСЬ !!!
+    BASE_URL = "https://api-football-v1.p.rapidapi.com/v3" # URL для v3, как в вашем curl
 
-        Args:
-            api_key (str): Ваш API ключ для доступа к API-Football.
-        """
-        self.api_key = api_key
-        self.base_url = "https://v3.football.api-sports.io"
+    def __init__(self, api_key: Optional[str] = APIFOOTBALL_KEY):
+        if not api_key:
+            raise ValueError("Ключ для API-Football не предоставлен. Проверьте .env файл.")
         self.headers = {
-            'x-rapidapi-host': "v3.football.api-sports.io",
-            'x-rapidapi-key': self.api_key
+            # !!! ВАЖНЫЕ ИЗМЕНЕНИЯ ЗДЕСЬ !!!
+            'x-rapidapi-host': "api-football-v1.p.rapidapi.com", # Хост, как в вашем curl
+            'x-rapidapi-key': api_key
         }
 
     def fetch_team_data(self, team_name: str) -> Optional[Dict[str, Any]]:
         """
-        Ищет данные команды по ее названию через API.
-
-        Args:
-            team_name (str): Название команды для поиска.
-
-        Returns:
-            Optional[Dict[str, Any]]: Словарь с данными о команде
-            (id, name, logo_url), если команда найдена, иначе None.
+        Ищет команду по имени через API-Football (v3).
         """
-        response = requests.get(
-            f"{self.base_url}/teams",
-            headers=self.headers,
-            params={"search": team_name}
-        )
-        response.raise_for_status()
-        data = response.json()
-
-        if data['results'] > 0:
-            team_info = data['response'][0]['team']
-            return {
-                "id": team_info['id'],
-                "name": team_info['name'],
-                "logo_url": team_info['logo']
+        # Эндпоинт для поиска команд в v3
+        endpoint = f"{self.BASE_URL}/teams"
+        params = {"search": team_name}
+        
+        try:
+            print(f"API-FOOTBALL (v3): Поиск команды '{team_name}'...")
+            response = requests.get(endpoint, headers=self.headers, params=params, timeout=15)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            if not data.get("results") or not data.get("response"):
+                print(f"API-FOOTBALL (v3): Команда '{team_name}' не найдена.")
+                return None
+                
+            # Берем наиболее релевантный результат (первый в списке)
+            team_info = data["response"][0]["team"]
+            result = {
+                "name": team_info.get("name"),
+                "logo_url": team_info.get("logo")
             }
-        return None
+            print(f"API-FOOTBALL (v3): Найдена команда '{result['name']}'")
+            return result
+
+        except requests.exceptions.Timeout:
+            print(f"API-FOOTBALL (v3): Ошибка: Превышено время ожидания ответа от сервера.")
+            return None
+        except requests.exceptions.HTTPError as e:
+            print(f"API-FOOTBALL (v3): HTTP ошибка при запросе: {e}")
+            return None
+        except requests.exceptions.RequestException as e:
+            print(f"API-FOOTBALL (v3): Ошибка сети или соединения: {e}")
+            return None
+        except (KeyError, IndexError) as e:
+            print(f"API-FOOTBALL (v3): Ошибка при разборе ответа от API: {e}, Ответ: {data}")
+            return None
