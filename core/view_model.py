@@ -2,7 +2,7 @@
 import os
 import requests
 import transliterate
-from transliterate.exceptions import LanguageNotFoundError
+# from transliterate.exceptions import LanguageNotFoundError
 
 from PySide6.QtCore import QObject, Slot, QThread, Signal, QMetaObject, Qt
 from gui.main_window import MainWindow
@@ -66,7 +66,7 @@ class ViewModel(QObject):
             if any('а' <= c <= 'я' for c in team_name.lower()):
                 team_name_translit = transliterate.translit(team_name, 'ru', reversed=True)
                 team_name = team_name_translit
-        except LanguageNotFoundError:
+        except Exception:
             print(f"[ПРЕДУПРЕЖДЕНИЕ] Не удалось выполнить транслитерацию для '{team_name}', используется оригинальный запрос.")
         team_data = self.cache_manager.find_team_by_alias(team_name)
         if team_data:
