@@ -2,7 +2,8 @@
 import os
 import requests
 import transliterate
-from transliterate.exceptions import LanguageNotFoundError
+from config import LOGO_DIR
+from typing import Optional, Dict, Any, Callable
 
 from PySide6.QtCore import QObject, Slot, QThread, Signal, QMetaObject, Qt
 from gui.main_window import MainWindow
@@ -10,13 +11,10 @@ from gui.worker import Worker
 from core.cache_manager import CacheManager
 from core.api_clients import ApiFootballClient
 from core.image_generator import ImageGenerator
-from config import LOGO_DIR
-from typing import Optional, Dict, Any, Callable
 
-# <<< ИЗМЕНЕНИЕ: Добавляем "заглушки" для статистики >>>
-# В будущем их можно вынести в config.py или в GUI
-LEAGUE_ID = 39  # Пример: Английская Премьер-лига
-SEASON = 2023   # Пример: Сезон 2023
+# "Заглушки" для статистики
+LEAGUE_ID = 39
+SEASON = 2023
 
 class ViewModel(QObject):
     """
@@ -37,12 +35,10 @@ class ViewModel(QObject):
         self.worker_thread.start()
 
         self.worker: Optional[Worker] = None
-        # <<< ИЗМЕНЕНИЕ: Добавляем атрибуты для хранения данных и статистики >>>
-        self.team1_data: Optional[Dict[str, Any]] = None
-        self.team2_data: Optional[Dict[str, Any]] = None
+        self.team1_data: Optional[Any] = None # Теперь это объект, а не словарь
+        self.team2_data: Optional[Any] = None # Теперь это объект, а не словарь
         self.team1_stats: Optional[Dict[str, Any]] = None
         self.team2_stats: Optional[Dict[str, Any]] = None
-
 
         self.main_window.generate_clicked.connect(self.on_generate_clicked)
     
@@ -58,12 +54,11 @@ class ViewModel(QObject):
         self.worker.error.connect(self._on_task_error)
         self.worker.finished.connect(on_finish)
         self.worker.finished.connect(lambda: setattr(self, 'worker', None))
-        self.worker.error.connect(lambda: setattr(self, 'worker', None))
-        self.worker.finished.connect(self.worker.deleteLater)
         self.worker.error.connect(self.worker.deleteLater)
+        self.worker.finished.connect(self.worker.deleteLater)
         QMetaObject.invokeMethod(self.worker, 'run', Qt.QueuedConnection)
 
-    def _find_team_flow(self, team_name: str, worker_progress_signal: Optional[Signal] = None) -> Dict[str, Any]:
+    def _find_team_flow(self, team_name: str, worker_progress_signal: Optional[Signal] = None) -> Any:
         def report_progress(msg):
             if worker_progress_signal:
                 worker_progress_signal.emit(msg)
@@ -72,7 +67,7 @@ class ViewModel(QObject):
             if any('а' <= c <= 'я' for c in team_name.lower()):
                 team_name_translit = transliterate.translit(team_name, 'ru', reversed=True)
                 team_name = team_name_translit
-        except LanguageNotFoundError:
+        except:
             print(f"[ПРЕДУПРЕЖДЕНИЕ] Не удалось выполнить транслитерацию для '{team_name}', используется оригинальный запрос.")
         team_data = self.cache_manager.find_team_by_alias(team_name)
         if team_data:
@@ -83,30 +78,28 @@ class ViewModel(QObject):
                 return team_data
         report_progress(f"'{original_team_name}' не найдена в кэше. Ищу в интернете...")
         api_data = self.api_client.fetch_team_data(team_name)
-        if not api_data or not api_data.get('logo_url'):
+        if not api_data or not api_data.logo_url:
             raise ValueError(f"Команда '{original_team_name}' не найдена ни в кэше, ни через API.")
-        report_progress(f"Загружаю логотип для '{api_data['name']}'...")
-        logo_path = self._download_logo(api_data['logo_url'], api_data['name'])
+        report_progress(f"Загружаю логотип для '{api_data.name}'...")
+        logo_path = self._download_logo(api_data.logo_url, api_data.name)
         if not logo_path:
-            raise ConnectionError(f"Не удалось загрузить логотип для '{api_data['name']}'.")
-        report_progress(f"Сохраняю '{api_data['name']}' в кэш...")
+            raise ConnectionError(f"Не удалось загрузить логотип для '{api_data.name}'.")
+        report_progress(f"Сохраняю '{api_data.name}' в кэш...")
         self.cache_manager.add_or_update_team(
-            team_name=api_data['name'],
+            team_name=api_data.name,
             logo_filename=os.path.basename(logo_path),
             api_source='api-football',
-            aliases=[original_team_name, team_name, api_data['name']]
+            aliases=[original_team_name, team_name, api_data.name]
         )
         return self.cache_manager.find_team_by_alias(team_name)
 
     @Slot()
     def on_generate_clicked(self):
-        """Запускает полную цепочку сбора данных: инфо -> инфо -> стат -> стат -> генерация."""
         if self.worker is not None:
             self.main_window.set_status_message("Подождите, предыдущая операция еще не завершена.")
             return
         
         self.main_window.toggle_generate_button(False)
-        # Сбрасываем все данные перед новым запуском
         self.team1_data, self.team2_data, self.team1_stats, self.team2_stats = None, None, None, None
         
         team1_name = self.main_window.team1_input.text().strip()
@@ -118,46 +111,40 @@ class ViewModel(QObject):
         team2_name = self.main_window.team2_input.text().strip()
         self._run_task(self._find_team_flow, team2_name, on_finish=self._on_team2_found)
 
-    # <<< ИЗМЕНЕНИЕ: Этот метод теперь запускает сбор статистики >>>
     @Slot(object)
     def _on_team2_found(self, team2_result):
-        """
-        Обработчик нахождения второй команды. Запускает сбор статистики для первой команды.
-        """
         self.team2_data = team2_result
-        self.main_window.set_status_message(f"Сбор статистики для {self.team1_data['name']}...")
+        
+        # <<< ИСПРАВЛЕНО: Доступ через точку .name >>>
+        self.main_window.set_status_message(f"Сбор статистики для {self.team1_data.name}...")
         
         self._run_task(
             self.api_client.fetch_team_statistics,
-            team_id=self.team1_data['id'],
+            # <<< ИСПРАВЛЕНО: Доступ через точку .id >>>
+            team_id=self.team1_data.id,
             league_id=LEAGUE_ID,
             season=SEASON,
             on_finish=self._on_team1_stats_found
         )
 
-    # <<< ИЗМЕНЕНИЕ: Новый слот для обработки статистики первой команды >>>
     @Slot(object)
     def _on_team1_stats_found(self, team1_stats_result):
-        """
-        Обработчик получения статистики первой команды. Запускает сбор для второй.
-        """
         self.team1_stats = team1_stats_result
-        self.main_window.set_status_message(f"Сбор статистики для {self.team2_data['name']}...")
+        
+        # <<< ИСПРАВЛЕНО: Доступ через точку .name >>>
+        self.main_window.set_status_message(f"Сбор статистики для {self.team2_data.name}...")
         
         self._run_task(
             self.api_client.fetch_team_statistics,
-            team_id=self.team2_data['id'],
+            # <<< ИСПРАВЛЕНО: Доступ через точку .id >>>
+            team_id=self.team2_data.id,
             league_id=LEAGUE_ID,
             season=SEASON,
             on_finish=self._on_team2_stats_found
         )
 
-    # <<< ИЗМЕНЕНИЕ: Новый финальный слот, который вызывает генератор >>>
     @Slot(object)
     def _on_team2_stats_found(self, team2_stats_result):
-        """
-        Финальный обработчик. Получает статистику второй команды и запускает генерацию.
-        """
         self.team2_stats = team2_stats_result
         self.main_window.set_status_message("Все данные собраны. Генерация изображения...")
         
@@ -192,7 +179,6 @@ class ViewModel(QObject):
         self.main_window.toggle_generate_button(True)
 
     def _download_logo(self, logo_url: str, team_name: str) -> str:
-        # ... без изменений ...
         try:
             response = requests.get(logo_url, stream=True, timeout=10)
             response.raise_for_status()
@@ -208,7 +194,6 @@ class ViewModel(QObject):
             raise ConnectionError(f"Ошибка сети при загрузке логотипа: {exc}") from exc
 
     def shutdown(self):
-        # ... без изменений ...
         if self.worker_thread.isRunning():
             print("Запрос на остановку фонового потока...")
             self.worker_thread.quit()

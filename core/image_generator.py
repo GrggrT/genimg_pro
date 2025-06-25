@@ -1,137 +1,149 @@
 # core/image_generator.py
 import os
-from PIL import Image, ImageDraw, ImageFont
-from config import (
-    OUTPUT_DIR, LOGO_DIR, IMAGE_SIZE,
-    DEFAULT_BACKGROUND_COLOR_1, FONT_PATH
-)
+from PySide6.QtGui import QPainter, QImage, QFont, QFontDatabase, QColor, QPen
+from PySide6.QtCore import QRectF, Qt
+
+# Предполагается, что эти переменные определены в вашем config.py
+# Пример:
+# TEMPLATE_PATH = "assets/template.png"
+# FONTS_DIR = "assets/fonts"
+# OUTPUT_DIR = "output"
+# LOGO_DIR = "logos_cache"
+from config import OUTPUT_DIR, LOGO_DIR
+
+# Предполагается, что у вас есть такая модель
+# (если нет, можно снова использовать словари)
+from core.models import Team 
 
 class ImageGenerator:
     """
-    Отвечает за создание итогового изображения для поста.
+    Класс для создания изображений на основе данных о командах и прогнозов,
+    используя PySide6 (Qt) для рендеринга.
     """
-
     def __init__(self):
-        """
-        Инициализирует генератор изображений.
-        Создает выходную директорию, если она не существует.
-        """
-        if not os.path.exists(OUTPUT_DIR):
-            os.makedirs(OUTPUT_DIR)
-            print(f"Создана директория для сгенерированных изображений: {OUTPUT_DIR}")
+        """Инициализирует генератор, загружает шрифты и проверяет пути."""
+        self.template_path = TEMPLATE_PATH
+        self.fonts = {}
+        self._load_fonts()
         
-        # --- Загрузка шрифтов разных размеров ---
-        try:
-            self.font_league = ImageFont.truetype(FONT_PATH, size=45)
-            self.font_team = ImageFont.truetype(FONT_PATH, size=40)
-            self.font_form = ImageFont.truetype(FONT_PATH, size=35)
-            self.font_prediction = ImageFont.truetype(FONT_PATH, size=60)
-            self.font_stats_header = ImageFont.truetype(FONT_PATH, size=38)
-            self.font_stats_value = ImageFont.truetype(FONT_PATH, size=38)
-            print("Шрифты успешно загружены.")
-        except IOError:
-            print(f"Шрифт не найден по пути: {FONT_PATH}. Используется шрифт по умолчанию.")
-            # В случае ошибки, загружаем шрифты по умолчанию
-            self.font_league = self.font_team = self.font_form = self.font_prediction \
-            = self.font_stats_header = self.font_stats_value = ImageFont.load_default()
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        print("ImageGenerator инициализирован. Используется рендеринг через Qt.")
 
-    def _draw_text(self, draw, position, text, font, fill=(255, 255, 255), anchor="ms"):
-        """Вспомогательная функция для отрисовки текста с центрированием."""
-        draw.text(position, text, font=font, fill=fill, anchor=anchor)
+    def _load_fonts(self):
+        """Загружает кастомные шрифты из директории assets/fonts."""
+        if not os.path.exists(FONTS_DIR):
+            print(f"ВНИМАНИЕ: Директория со шрифтами не найдена: {FONTS_DIR}")
+            return
+            
+        for font_file in os.listdir(FONTS_DIR):
+            if font_file.lower().endswith('.ttf'):
+                font_path = os.path.join(FONTS_DIR, font_file)
+                font_id = QFontDatabase.addApplicationFont(font_path)
+                if font_id != -1:
+                    font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
+                    # Ключ - имя файла без расширения
+                    font_name = os.path.splitext(font_file)[0]
+                    self.fonts[font_name] = font_family
+        if self.fonts:
+            print(f"Шрифты успешно загружены: {list(self.fonts.keys())}")
+        else:
+            print("Кастомные шрифты не загружены. Будет использован шрифт по умолчанию.")
 
-    def create_single_post_image(self, team1_data: dict, team1_stats: dict, team2_data: dict, team2_stats: dict, prediction_text: str) -> str | None:
+    def _get_font(self, name: str, size: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
+        """Вспомогательный метод для получения настроенного объекта QFont."""
+        font_family = self.fonts.get(name, 'Arial') # Arial как запасной вариант
+        font = QFont(font_family, size)
+        font.setWeight(weight)
+        return font
+
+    def create_single_post_image(self, team1_data: Team, team1_stats: dict, team2_data: Team, team2_stats: dict, prediction_text: str) -> str:
         """
-        Создает информационное изображение для одиночного поста.
-
-        Args:
-            team1_data (dict): Данные команды 1.
-            team1_stats (dict): Статистика команды 1.
-            team2_data (dict): Данные команды 2.
-            team2_stats (dict): Статистика команды 2.
-            prediction_text (str): Текст прогноза.
-
-        Returns:
-            str | None: Путь к сохраненному файлу или None в случае ошибки.
+        Создает информационное изображение для поста, используя QPainter.
         """
-        try:
-            # 1. Создание холста
-            background = Image.new('RGB', IMAGE_SIZE, color=DEFAULT_BACKGROUND_COLOR_1)
-            draw = ImageDraw.Draw(background)
+        image = QImage(self.template_path)
+        
+        # --- ВАША ПРОВЕРКА ---
+        # Проверяем, загрузился ли шаблон, перед тем как начать рисовать.
+        if image.isNull():
+            raise FileNotFoundError(f"Критическая ошибка: Не удалось загрузить шаблон изображения по пути: {self.template_path}")
 
-            # --- 2. Шапка: Название лиги ---
-            league_name = team1_stats.get('league', {}).get('name', 'Лига не указана')
-            self._draw_text(draw, (IMAGE_SIZE[0] // 2, 80), league_name.upper(), self.font_league)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        white_color = QColor('white')
+        gray_color = QColor('#A9A9A9') # Тусклый серый для доп. информации
 
-            # --- 3. Центральная зона: Логотипы и названия команд ---
-            logo1_path = os.path.join(LOGO_DIR, team1_data['logo_filename'])
-            logo2_path = os.path.join(LOGO_DIR, team2_data['logo_filename'])
+        # 1. Шапка: Название лиги
+        league_name = team1_stats.get('league', {}).get('name', 'Лига не указана')
+        painter.setFont(self._get_font('onest-medium', 45))
+        painter.setPen(white_color)
+        painter.drawText(QRectF(0, 50, image.width(), 60), Qt.AlignmentFlag.AlignCenter, league_name.upper())
 
-            logo1 = Image.open(logo1_path).convert("RGBA")
-            logo2 = Image.open(logo2_path).convert("RGBA")
+        # 2. Логотипы
+        logo1_path = os.path.join(LOGO_DIR, os.path.basename(team1_data.logo_path))
+        logo2_path = os.path.join(LOGO_DIR, os.path.basename(team2_data.logo_path))
+        logo1 = QImage(logo1_path)
+        logo2 = QImage(logo2_path)
+        
+        if not logo1.isNull():
+            painter.drawImage(QRectF(250, 250, 300, 300), logo1)
+        if not logo2.isNull():
+            painter.drawImage(QRectF(image.width() - 550, 250, 300, 300), logo2)
+        
+        # 3. Названия команд
+        painter.setFont(self._get_font('onest-bold', 40, QFont.Weight.Bold))
+        painter.setPen(white_color)
+        painter.drawText(QRectF(150, 580, 500, 50), Qt.AlignmentFlag.AlignCenter, team1_data.name)
+        painter.drawText(QRectF(image.width() - 650, 580, 500, 50), Qt.AlignmentFlag.AlignCenter, team2_data.name)
 
-            logo_size = (300, 300)
-            logo1 = logo1.resize(logo_size, Image.Resampling.LANCZOS)
-            logo2 = logo2.resize(logo_size, Image.Resampling.LANCZOS)
+        # 4. Форма команд
+        form1 = team1_stats.get('form', '?????')[-5:]
+        form2 = team2_stats.get('form', '?????')[-5:]
+        painter.setFont(self._get_font('onest-regular', 35))
+        painter.setPen(gray_color)
+        painter.drawText(QRectF(150, 640, 500, 40), Qt.AlignmentFlag.AlignCenter, f"Форма: {form1}")
+        painter.drawText(QRectF(image.width() - 650, 640, 500, 40), Qt.AlignmentFlag.AlignCenter, f"Форма: {form2}")
 
-            pos1 = (250, 250)
-            pos2 = (IMAGE_SIZE[0] - logo_size[0] - 250, 250)
-            background.paste(logo1, pos1, logo1)
-            background.paste(logo2, pos2, logo2)
+        # 5. Прогноз
+        painter.setFont(self._get_font('onest-bold', 60, QFont.Weight.Bold))
+        painter.setPen(white_color)
+        painter.drawText(QRectF(0, 740, image.width(), 70), Qt.AlignmentFlag.AlignCenter, prediction_text)
+        
+        # 6. Статистика
+        stats_y_start = 880
+        line_height = 60
+        stats_map = {
+            "Победы": ('fixtures', 'wins'), "Ничьи": ('fixtures', 'draws'),
+            "Поражения": ('fixtures', 'loses'), "Средний гол": ('goals', 'average')
+        }
+        
+        for i, (label, keys) in enumerate(stats_map.items()):
+            y = stats_y_start + i * line_height
+            stat1_val = team1_stats.get(keys[0], {}).get(keys[1], {}).get('total', '-')
+            stat2_val = team2_stats.get(keys[0], {}).get(keys[1], {}).get('total', '-')
             
-            self._draw_text(draw, (pos1[0] + logo_size[0]//2, 580), team1_data['name'], self.font_team)
-            self._draw_text(draw, (pos2[0] + logo_size[0]//2, 580), team2_data['name'], self.font_team)
+            # Название метрики
+            painter.setFont(self._get_font('onest-medium', 38))
+            painter.setPen(gray_color)
+            painter.drawText(QRectF(0, y, image.width(), 50), Qt.AlignmentFlag.AlignCenter, label)
 
-            # --- 4. Зона "Форма" ---
-            form1 = team1_stats.get('form', '?????')[-5:]
-            form2 = team2_stats.get('form', '?????')[-5:]
-            self._draw_text(draw, (pos1[0] + logo_size[0]//2, 640), f"Форма: {form1}", self.font_form, fill=(200, 200, 200))
-            self._draw_text(draw, (pos2[0] + logo_size[0]//2, 640), f"Форма: {form2}", self.font_form, fill=(200, 200, 200))
+            # Значения
+            painter.setFont(self._get_font('onest-bold', 38, QFont.Weight.Bold))
+            painter.setPen(white_color)
+            painter.drawText(QRectF(350, y, 200, 50), Qt.AlignmentFlag.AlignLeft, str(stat1_val))
+            painter.drawText(QRectF(image.width() - 550, y, 200, 50), Qt.AlignmentFlag.AlignRight, str(stat2_val))
 
-            # --- 5. Ваш прогноз ---
-            self._draw_text(draw, (IMAGE_SIZE[0] // 2, 750), prediction_text, self.font_prediction)
+        painter.end()
 
-            # --- 6. Нижняя зона (статистика) ---
-            stats_y_start = 900
-            line_height = 60
-            center_x = IMAGE_SIZE[0] // 2
-            col1_x = 350
-            col3_x = IMAGE_SIZE[0] - 350
+        # Сохранение файла
+        safe_name1 = "".join(c for c in team1_data.name if c.isalnum())
+        safe_name2 = "".join(c for c in team2_data.name if c.isalnum())
+        output_filename = f"{safe_name1}_vs_{safe_name2}_qt.png"
+        output_path = os.path.join(OUTPUT_DIR, output_filename)
+        
+        if image.save(output_path):
+            print(f"Изображение успешно сохранено: {output_path}")
+        else:
+            print(f"Ошибка: Не удалось сохранить изображение в {output_path}")
 
-            stats_map = {
-                "Победы": ('fixtures', 'wins'),
-                "Ничьи": ('fixtures', 'draws'),
-                "Поражения": ('fixtures', 'loses'),
-                "Средний гол": ('goals', 'average')
-            }
-            
-            for i, (label, keys) in enumerate(stats_map.items()):
-                y = stats_y_start + i * line_height
-                
-                # Статистика команды 1
-                stat1_val = team1_stats.get(keys[0], {}).get(keys[1], {}).get('total', '-')
-                self._draw_text(draw, (col1_x, y), str(stat1_val), self.font_stats_value, anchor="ms")
-                
-                # Название показателя
-                self._draw_text(draw, (center_x, y), label, self.font_stats_header, fill=(200, 200, 200), anchor="mm")
-
-                # Статистика команды 2
-                stat2_val = team2_stats.get(keys[0], {}).get(keys[1], {}).get('total', '-')
-                self._draw_text(draw, (col3_x, y), str(stat2_val), self.font_stats_value, anchor="ms")
-
-            # --- 7. Сохранение ---
-            safe_name1 = "".join(c for c in team1_data['name'] if c.isalnum())
-            safe_name2 = "".join(c for c in team2_data['name'] if c.isalnum())
-            output_filename = f"{safe_name1}_vs_{safe_name2}_stats.png"
-            output_path = os.path.join(OUTPUT_DIR, output_filename)
-            
-            background.save(output_path, 'PNG', quality=95)
-            print(f"Изображение-дашборд успешно создано: {output_path}")
-            
-            return output_path
-
-        except FileNotFoundError as e:
-            print(f"Ошибка: Не найден файл логотипа. {e}")
-            return None
-        except Exception as e:
-            print(f"Произошла непредвиденная ошибка при создании изображения: {e}")
-            return None
+        return output_path

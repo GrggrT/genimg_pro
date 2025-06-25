@@ -18,6 +18,7 @@ from core.view_model import ViewModel
 from core.cache_manager import CacheManager
 from core.api_clients import ApiFootballClient
 from core.image_generator import ImageGenerator
+from config import APIFOOTBALL_KEY
 
 
 def main():
@@ -32,7 +33,7 @@ def main():
     # Создаем экземпляры всех наших классов
     main_window = MainWindow()
     cache_manager = CacheManager()
-    api_client = ApiFootballClient()
+    api_client = ApiFootballClient(APIFOOTBALL_KEY)
     image_generator = ImageGenerator()
 
     # Создаем ViewModel и внедряем в него все зависимости.

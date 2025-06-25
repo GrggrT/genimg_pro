@@ -1,141 +1,115 @@
 # core/api_clients.py
 
 import requests
-import httpx  # Добавляем импорт для асинхронных запросов
-import asyncio # Добавляем для демонстрационного запуска
+import logging
 from typing import Optional, Dict, Any
 
-# Предполагается, что эти переменные существуют в вашем config.py
-from config import APIFOOTBALL_KEY
+# Импортируем модель Team, чтобы возвращать объект
+# (Предполагается, что файл core/models.py существует)
+from core.models import Team 
 
-# --- Базовый класс для всех API клиентов ---
-class BaseApiClient:
-    """Абстрактный базовый класс для API клиентов."""
-    def fetch_team_data(self, team_name: str) -> Optional[Dict[str, Any]]:
-        raise NotImplementedError("Этот метод должен быть переопределен в дочернем классе.")
+# Получаем настроенный логгер. Использовать logging вместо print -
+# это требование из вашего ТЗ (3.1.3. Централизованное логирование)
+log = logging.getLogger(__name__)
 
-# --- РЕАЛИЗАЦИЯ ДЛЯ API-FOOTBALL ---
-class ApiFootballClient(BaseApiClient):
-    """Клиент для взаимодействия с API-Football (v3)."""
-    BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
+class ApiClientError(Exception):
+    """Кастомное исключение для явной обработки ошибок API в ViewModel."""
+    pass
 
-    def __init__(self, api_key: Optional[str] = APIFOOTBALL_KEY):
+class ApiFootballClient:
+    """
+    Клиент для взаимодействия с API-Football.
+    """
+    def __init__(self, api_key: str):
+        """
+        Инициализирует API клиент.
+        """
         if not api_key:
-            raise ValueError("Ключ для API-Football не предоставлен. Проверьте .env файл.")
+            raise ValueError("API-ключ для ApiFootballClient не предоставлен.")
+            
+        self.api_key = api_key
+        self.base_url = "https://v3.football.api-sports.io"
         self.headers = {
-            'x-rapidapi-host': "api-football-v1.p.rapidapi.com",
-            'x-rapidapi-key': api_key
+            'x-rapidapi-host': "v3.football.api-sports.io",
+            'x-rapidapi-key': self.api_key
         }
 
-    # --- Существующий синхронный метод ---
-    def fetch_team_data(self, team_name: str) -> Optional[Dict[str, Any]]:
+    def _make_request(self, endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Ищет команду по имени через API-Football (v3).
+        Внутренний метод для выполнения и обработки HTTP-запросов.
+        Уменьшает дублирование кода и централизует обработку ошибок.
         """
-        endpoint = f"{self.BASE_URL}/teams"
-        params = {"search": team_name}
-        
+        url = f"{self.base_url}/{endpoint}"
         try:
-            print(f"API-FOOTBALL (v3): Поиск команды '{team_name}'...")
-            response = requests.get(endpoint, headers=self.headers, params=params, timeout=15)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            if not data.get("results") or not data.get("response"):
-                print(f"API-FOOTBALL (v3): Команда '{team_name}' не найдена.")
-                return None
-                
-            team_info = data["response"][0]["team"]
-            result = {
-                "id": team_info.get("id"), # Добавим ID, он понадобится для статистики
-                "name": team_info.get("name"),
-                "logo_url": team_info.get("logo")
-            }
-            print(f"API-FOOTBALL (v3): Найдена команда '{result['name']}' с ID {result['id']}")
-            return result
-
-        except requests.exceptions.Timeout:
-            print(f"API-FOOTBALL (v3): Ошибка: Превышено время ожидания ответа от сервера.")
-            return None
+            response = requests.get(url, headers=self.headers, params=params, timeout=15)
+            # Вызовет исключение для кодов 4xx/5xx
+            response.raise_for_status() 
+            return response.json()
+        except requests.exceptions.Timeout as e:
+            log.error(f"Ошибка таймаута при запросе к {url}: {e}")
+            raise ApiClientError(f"Сервер не ответил вовремя.") from e
         except requests.exceptions.HTTPError as e:
-            print(f"API-FOOTBALL (v3): HTTP ошибка при запросе: {e}")
-            return None
+            log.error(f"HTTP ошибка при запросе к {url}: {e.response.status_code} {e.response.text}")
+            raise ApiClientError(f"Ошибка API: {e.response.status_code}") from e
         except requests.exceptions.RequestException as e:
-            print(f"API-FOOTBALL (v3): Ошибка сети или соединения: {e}")
-            return None
-        except (KeyError, IndexError) as e:
-            print(f"API-FOOTBALL (v3): Ошибка при разборе ответа от API: {e}, Ответ: {data}")
-            return None
-    
-    # --- НОВЫЙ АСИНХРОННЫЙ МЕТОД ---
-    async def fetch_team_statistics(self, team_id: int, league_id: int, season: int) -> Optional[Dict[str, Any]]:
+            log.error(f"Сетевая ошибка при запросе к {url}: {e}")
+            raise ApiClientError("Ошибка сети. Проверьте подключение к интернету.") from e
+
+    def fetch_team_data(self, team_name: str) -> Optional[Team]:
         """
-        Асинхронно получает полную статистику команды для указанной лиги и сезона.
+        Ищет данные команды по ее названию через API.
+
+        Args:
+            team_name (str): Название команды для поиска.
+
+        Returns:
+            Optional[Team]: Объект Team с данными, если команда найдена, иначе None.
+        
+        Raises:
+            ApiClientError: В случае сетевых проблем или ошибок API.
         """
-        endpoint = f"{self.BASE_URL}/teams/statistics"
-        params = {
-            "team": str(team_id),
-            "league": str(league_id),
-            "season": str(season)
-        }
+        log.info(f"Выполняю поиск команды '{team_name}' через API-Football...")
         
-        async with httpx.AsyncClient() as client:
-            try:
-                print(f"API-FOOTBALL (async): Запрос статистики для team_id={team_id}, league_id={league_id}...")
-                response = await client.get(endpoint, headers=self.headers, params=params, timeout=15.0)
-                response.raise_for_status()
-                data = response.json()
-                
-                if data and data.get("results", 0) > 0 and "response" in data:
-                    print(f"API-FOOTBALL (async): Статистика для team_id={team_id} успешно получена.")
-                    return data["response"]
-                else:
-                    print(f"API-FOOTBALL (async): Статистика не найдена для team_id={team_id}, league_id={league_id}, season={season}.")
-                    return None
-            except httpx.TimeoutException:
-                print(f"API-FOOTBALL (async): Ошибка: Превышено время ожидания ответа.")
-                return None
-            except httpx.HTTPStatusError as e:
-                print(f"API-FOOTBALL (async): HTTP ошибка при запросе статистики: {e.response.status_code} - {e.response.text}")
-                return None
-            except httpx.RequestError as e:
-                print(f"API-FOOTBALL (async): Ошибка сети или соединения при запросе статистики: {e}")
-                return None
+        data = self._make_request("teams", params={"search": team_name})
 
-# --- Пример использования (для демонстрации) ---
-async def demo_main():
-    print("--- Демонстрация работы ApiFootballClient ---\n")
-    
-    if not APIFOOTBALL_KEY:
-        print("Ключ APIFOOTBALL_KEY не найден. Демонстрация невозможна.")
-        return
+        if data and data.get('results', 0) > 0:
+            team_info = data['response'][0]['team']
+            log.info(f"Найдена команда '{team_info['name']}' с ID {team_info['id']}")
+            
+            # Возвращаем не словарь, а объект Team, как вы и сделали
+            return Team(
+                id=team_info['id'],
+                name=team_info['name'],
+                logo_url=team_info['logo']
+            )
+            
+        log.warning(f"Команда '{team_name}' не найдена через API-Football.")
+        return None
 
-    client = ApiFootballClient(api_key=APIFOOTBALL_KEY)
-    
-    # 1. Сначала найдем команду синхронно, чтобы получить ее ID
-    print("--- Шаг 1: Поиск ID команды (синхронно) ---")
-    team_data = client.fetch_team_data("Man Utd")
-    
-    if not team_data:
-        print("\nНе удалось найти команду. Демонстрация статистики невозможна.")
-        return
+    def fetch_team_statistics(self, team_id: int, league_id: int, season: int) -> Optional[Dict[str, Any]]:
+        """
+        Получает статистику команды для лиги и сезона.
+        Этот метод предназначен для вызова из фонового потока (QThread).
+
+        Args:
+            team_id (int): ID команды.
+            league_id (int): ID лиги.
+            season (int): Год сезона.
+
+        Returns:
+            Optional[dict]: Словарь со статистикой или None, если ничего не найдено.
+            
+        Raises:
+            ApiClientError: В случае сетевых проблем или ошибок API.
+        """
+        log.info(f"Запрашиваю статистику для команды ID {team_id}, лига ID {league_id}...")
         
-    # 2. Теперь используем ID для асинхронного получения статистики
-    print("\n--- Шаг 2: Запрос статистики (асинхронно) ---")
-    team_id, league_id, season = team_data['id'], 39, 2020 # ID, Premier League, Season 2020
-    
-    statistics = await client.fetch_team_statistics(team_id=team_id, league_id=league_id, season=season)
-    
-    if statistics:
-        print("\n--- Успешно получена статистика ---")
-        print(f"Команда: {statistics.get('team', {}).get('name')}")
-        print(f"Лига: {statistics.get('league', {}).get('name')}")
-        print(f"Форма: {statistics.get('form', 'N/A')}")
-        print("---------------------------------")
-    else:
-        print("\n--- Не удалось получить статистику ---")
-
-if __name__ == '__main__':
-    # Для запуска асинхронного демонстрационного кода
-    asyncio.run(demo_main())
+        params = {'league': league_id, 'season': season, 'team': team_id}
+        data = self._make_request("teams/statistics", params=params)
+        
+        if data and data.get('results', 0) > 0:
+            log.info(f"Статистика для команды ID {team_id} успешно получена.")
+            return data['response']
+            
+        log.warning(f"Статистика для команды ID {team_id} не найдена.")
+        return None
