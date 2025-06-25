@@ -1,89 +1,109 @@
 # core/cache_manager.py
 
-import sqlite3
-from pathlib import Path
-from typing import Dict, Any, Optional, List
+import os
+import time
+from sqlalchemy.orm import sessionmaker, joinedload
+from core.models import Team, TeamAlias, get_engine # Предполагаем, что у вас есть модели Team и TeamAlias
+from config import CACHE_EXPIRATION_DAYS, LOGO_DIR
 
 class CacheManager:
     """
-    Управляет кэшем данных команд в базе данных SQLite.
-
-    Отвечает за создание таблиц, добавление новых команд и их поиск
-    по имени или псевдонимам.
+    Управляет кэшем данных в базе данных SQLite через SQLAlchemy.
     """
-    def __init__(self, db_path: str) -> None:
-        """
-        Инициализирует менеджер кэша.
+    def __init__(self):
+        engine = get_engine()
+        self.Session = sessionmaker(bind=engine)
 
-        Args:
-            db_path (str): Путь к файлу базы данных SQLite.
-        """
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(self.db_path, check_same_thread=False)
-        self._connection.row_factory = sqlite3.Row
-        self._create_tables()
+    def _normalize_name(self, name: str) -> str:
+        return name.strip().lower()
 
-    def _create_tables(self) -> None:
-        """Создает необходимые таблицы в БД, если они не существуют."""
-        with self._connection:
-            self._connection.execute("""
-                CREATE TABLE IF NOT EXISTS teams (
-                    id INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL UNIQUE,
-                    logo_path TEXT NOT NULL,
-                    api_source TEXT
+    def find_team_by_alias(self, alias: str):
+        """
+        Ищет команду в кэше по её псевдониму.
+        Включает проверку на срок годности кэша и наличие файла логотипа.
+        """
+        normalized_alias = self._normalize_name(alias)
+        session = self.Session()
+        try:
+            # Ищем псевдоним и сразу подгружаем связанную команду
+            team_alias = (
+                session.query(TeamAlias)
+                .options(joinedload(TeamAlias.team))
+                .filter(TeamAlias.alias == normalized_alias)
+                .first()
+            )
+
+            if not team_alias or not team_alias.team:
+                print(f"КЭШ: Псевдоним '{normalized_alias}' не найден.")
+                return None
+
+            team = team_alias.team
+            
+            # Проверяем, не устарел ли кэш
+            cache_lifetime_seconds = CACHE_EXPIRATION_DAYS * 24 * 60 * 60
+            if time.time() - team.last_updated_ts > cache_lifetime_seconds:
+                print(f"КЭШ: Запись для '{team.name}' устарела. Требуется обновление.")
+                return None
+            
+            # Проверяем, существует ли файл логотипа
+            logo_full_path = os.path.join(LOGO_DIR, team.logo_filename)
+            if not os.path.exists(logo_full_path):
+                 print(f"КЭШ: Файл логотипа для '{team.name}' не найден по пути {logo_full_path}. Требуется обновление.")
+                 return None
+
+            print(f"КЭШ: Команда '{team.name}' найдена в кэше по псевдониму '{normalized_alias}'.")
+            return team
+        finally:
+            session.close()
+
+    def add_or_update_team(self, team_name: str, logo_filename: str, api_source: str, aliases: list[str]):
+        """
+        Интеллектуально добавляет или обновляет команду и её псевдонимы.
+        - Находит или создает основную запись о команде.
+        - Добавляет только новые, уникальные псевдонимы.
+        """
+        normalized_team_name = self._normalize_name(team_name)
+        session = self.Session()
+        try:
+            # 1. Найти или создать основную запись о команде
+            team = session.query(Team).filter(Team.name_normalized == normalized_team_name).first()
+            
+            if team:
+                # Команда уже существует, обновляем данные
+                print(f"КЭШ: Обновление существующей команды '{team_name}'.")
+                team.logo_filename = logo_filename
+                team.api_source = api_source
+                team.last_updated_ts = int(time.time())
+            else:
+                # Команды нет, создаем новую
+                print(f"КЭШ: Создание новой команды '{team_name}'.")
+                team = Team(
+                    name=team_name,
+                    name_normalized=normalized_team_name,
+                    logo_filename=logo_filename,
+                    api_source=api_source,
+                    last_updated_ts=int(time.time())
                 )
-            """)
-            self._connection.execute("""
-                CREATE TABLE IF NOT EXISTS team_aliases (
-                    id INTEGER PRIMARY KEY,
-                    team_id INTEGER,
-                    alias TEXT NOT NULL UNIQUE,
-                    FOREIGN KEY(team_id) REFERENCES teams(id)
-                )
-            """)
+                session.add(team)
+            
+            # Предварительная фиксация, чтобы получить team.id для новой команды
+            session.flush()
 
-    def add_team_to_cache(self, name: str, logo_path: str, api_source: str, aliases: Optional[List[str]] = None) -> None:
-        """
-        Добавляет новую команду и ее псевдонимы в кэш.
+            # 2. Добавить только новые псевдонимы
+            for alias_str in aliases:
+                normalized_alias = self._normalize_name(alias_str)
+                # Проверяем, существует ли уже такой псевдоним
+                alias_exists = session.query(TeamAlias).filter(TeamAlias.alias == normalized_alias).first()
+                if not alias_exists:
+                    print(f"КЭШ: Добавление нового псевдонима '{normalized_alias}' для команды '{team.name}'.")
+                    new_alias = TeamAlias(alias=normalized_alias, team_id=team.id)
+                    session.add(new_alias)
+                else:
+                    print(f"КЭШ: Псевдоним '{normalized_alias}' уже существует.")
 
-        Args:
-            name (str): Официальное название команды.
-            logo_path (str): Путь к файлу с логотипом.
-            api_source (str): Источник данных (например, 'api-football').
-            aliases (Optional[List[str]]): Список псевдонимов для команды.
-        """
-        with self._connection:
-            cursor = self._connection.cursor()
-            cursor.execute("INSERT INTO teams (name, logo_path, api_source) VALUES (?, ?, ?)",
-                           (name, logo_path, api_source))
-            team_id = cursor.lastrowid
-            if aliases:
-                for alias in aliases:
-                    cursor.execute("INSERT INTO team_aliases (team_id, alias) VALUES (?, ?)",
-                                   (team_id, alias.lower()))
-            # Добавляем само имя команды как псевдоним в нижнем регистре
-            cursor.execute("INSERT INTO team_aliases (team_id, alias) VALUES (?, ?)",
-                           (team_id, name.lower()))
-
-
-    def find_team_by_name(self, name: str) -> Optional[Dict[str, Any]]:
-        """
-        Ищет команду в кэше по имени или псевдониму.
-
-        Args:
-            name (str): Имя или псевдоним команды для поиска.
-
-        Returns:
-            Optional[Dict[str, Any]]: Словарь с данными команды, если найдена, иначе None.
-        """
-        cursor = self._connection.cursor()
-        cursor.execute("""
-            SELECT t.id, t.name, t.logo_path, t.api_source
-            FROM teams t
-            JOIN team_aliases ta ON t.id = ta.team_id
-            WHERE ta.alias = ?
-        """, (name.lower(),))
-        row = cursor.fetchone()
-        return dict(row) if row else None
+            session.commit()
+        except Exception as e:
+            print(f"КЭШ: Ошибка при добавлении/обновлении записи: {e}")
+            session.rollback()
+        finally:
+            session.close()
